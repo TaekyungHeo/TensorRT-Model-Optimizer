@@ -23,38 +23,64 @@ Supported formats:
     - fp8: FP8 quantization (recommended for Ada/Hopper GPUs)
     - fp4: NVFP4 quantization (requires Blackwell GPUs, best compression)
     - int8: INT8 quantization
+    - int4_awq: INT4 AWQ weight-only quantization
 
 Usage:
-    # FP8 quantization
-    python quantize_wan_native.py \
-        --ckpt-dir /path/to/wan/checkpoint \
-        --format fp8 \
-        --calib-size 32 \
-        --batch-size 1 \
-        --quantized-ckpt-save-path ./quantized_wan/
-
-    # NVFP4 quantization (4x compression)
+    # NVFP4 full quantization (W4A4)
     python quantize_wan_native.py \
         --ckpt-dir /path/to/wan/checkpoint \
         --format fp4 \
-        --calib-size 64 \
-        --quantized-ckpt-save-path ./quantized_wan_fp4/
+        --calib-size 32 \
+        --quantized-ckpt-save-path ./quantized/full_nvfp4/
 
-    # NVFP4 with SVDQuant (better quality)
+    # NVFP4 weight-only (W4A-BF16)
+    python quantize_wan_native.py \
+        --ckpt-dir /path/to/wan/checkpoint \
+        --format fp4 \
+        --activation-enabled false \
+        --quantized-ckpt-save-path ./quantized/weight_only/
+
+    # NVFP4 FFN-only
+    python quantize_wan_native.py \
+        --ckpt-dir /path/to/wan/checkpoint \
+        --format fp4 \
+        --quantize-attention false \
+        --quantized-ckpt-save-path ./quantized/ffn_only/
+
+    # NVFP4 layer range (blocks 0-10)
+    python quantize_wan_native.py \
+        --ckpt-dir /path/to/wan/checkpoint \
+        --format fp4 \
+        --layer-range 0-10 \
+        --quantized-ckpt-save-path ./quantized/layer_q1/
+
+    # NVFP4 with SVDQuant algorithm
     python quantize_wan_native.py \
         --ckpt-dir /path/to/wan/checkpoint \
         --format fp4 \
         --quant-algo svdquant \
         --lowrank 32 \
-        --calib-size 64 \
-        --quantized-ckpt-save-path ./quantized_wan_fp4_svd/
+        --quantized-ckpt-save-path ./quantized/svdquant/
 
-Example with custom prompts:
+    # INT4 AWQ weight-only (for format comparison)
+    python quantize_wan_native.py \
+        --ckpt-dir /path/to/wan/checkpoint \
+        --format int4_awq \
+        --quantized-ckpt-save-path ./quantized/int4_awq/
+
+    # NVFP4 with sensitive layers kept in BF16
     python quantize_wan_native.py \
         --ckpt-dir /path/to/wan/checkpoint \
         --format fp4 \
-        --prompts-file ./calib_prompts.txt \
-        --quantized-ckpt-save-path ./quantized_wan/
+        --sensitive-layers-file ./sensitive_layers.txt \
+        --quantized-ckpt-save-path ./quantized/sensitive_bf16/
+
+    # Expert-specific: low_noise only
+    python quantize_wan_native.py \
+        --ckpt-dir /path/to/wan/checkpoint \
+        --format fp4 \
+        --quantize-high-noise false \
+        --quantized-ckpt-save-path ./quantized/low_noise_only/
 """
 
 import argparse
@@ -86,6 +112,7 @@ import modelopt.torch.quantization as mtq
 
 from config import (
     FP8_DEFAULT_CONFIG,
+    INT4_AWQ_CONFIG,
     INT8_DEFAULT_CONFIG,
     NVFP4_DEFAULT_CONFIG,
     NVFP4_FP8_MHA_CONFIG,
@@ -98,6 +125,7 @@ class QuantFormat(str, Enum):
     INT8 = "int8"
     FP8 = "fp8"
     FP4 = "fp4"
+    INT4_AWQ = "int4_awq"
 
 
 class QuantAlgo(str, Enum):
@@ -152,6 +180,7 @@ class WanQuantConfig:
     quantize_ffn: bool = True
     weight_enabled: bool = True
     activation_enabled: bool = True
+    sensitive_layers: list[str] | None = None
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -184,6 +213,7 @@ def create_quantization_filter(
     layer_range: tuple[int, int] | None = None,
     quantize_attention: bool = True,
     quantize_ffn: bool = True,
+    sensitive_layers: list[str] | None = None,
 ) -> Callable[[str], bool]:
     """Create a filter function that disables quantization based on layer range and component.
 
@@ -192,6 +222,8 @@ def create_quantization_filter(
                     If None, all layers are quantized.
         quantize_attention: Whether to quantize attention modules (self_attn, cross_attn).
         quantize_ffn: Whether to quantize FFN modules.
+        sensitive_layers: List of layer name patterns to keep in BF16 (disable quantization).
+                         Patterns are matched as substrings.
 
     Returns:
         Filter function that returns True for layers to DISABLE quantization.
@@ -219,6 +251,11 @@ def create_quantization_filter(
             if match:
                 block_idx = int(match.group(1))
                 if block_idx < start or block_idx >= end:
+                    return True
+
+        if sensitive_layers is not None:
+            for pattern in sensitive_layers:
+                if pattern in name:
                     return True
 
         return False
@@ -255,7 +292,7 @@ def get_quant_config(
     """Get quantization configuration based on format.
 
     Args:
-        format: Quantization format (int8, fp8, fp4)
+        format: Quantization format (int8, fp8, fp4, int4_awq)
         algo: Quantization algorithm (max, smoothquant, svdquant)
         trt_high_precision_dtype: TensorRT high precision dtype (Half, BFloat16, Float)
         alpha: SmoothQuant alpha parameter
@@ -280,6 +317,9 @@ def get_quant_config(
             quant_config = copy.deepcopy(NVFP4_FP8_MHA_CONFIG)
         else:
             quant_config = copy.deepcopy(NVFP4_DEFAULT_CONFIG)
+    elif format == QuantFormat.INT4_AWQ:
+        quant_config = copy.deepcopy(INT4_AWQ_CONFIG)
+        return quant_config
     else:
         raise NotImplementedError(f"Unknown format {format}")
 
@@ -316,6 +356,7 @@ class WanNativeQuantizer:
             layer_range=config.layer_range,
             quantize_attention=config.quantize_attention,
             quantize_ffn=config.quantize_ffn,
+            sensitive_layers=config.sensitive_layers,
         )
         
     def load_pipeline(self):
@@ -357,6 +398,12 @@ class WanNativeQuantizer:
         self.logger.info(f"  - Quantize FFN: {self.config.quantize_ffn}")
         self.logger.info(f"  - Weight enabled: {self.config.weight_enabled}")
         self.logger.info(f"  - Activation enabled: {self.config.activation_enabled}")
+        if self.config.sensitive_layers:
+            self.logger.info(f"  - Sensitive layers (BF16): {len(self.config.sensitive_layers)} patterns")
+            for pattern in self.config.sensitive_layers[:5]:
+                self.logger.info(f"      - {pattern}")
+            if len(self.config.sensitive_layers) > 5:
+                self.logger.info(f"      - ... and {len(self.config.sensitive_layers) - 5} more")
         
     def load_prompts(self) -> list[list[str]]:
         """Load calibration prompts."""
@@ -608,20 +655,26 @@ def create_argument_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Basic FP8 quantization
-    python quantize_wan_native.py --ckpt-dir /path/to/wan --format fp8 --quantized-ckpt-save-path ./quantized/
+    # NVFP4 full quantization (W4A4)
+    python quantize_wan_native.py --ckpt-dir /path/to/wan --format fp4 --quantized-ckpt-save-path ./quantized/full/
 
-    # NVFP4 quantization (4x compression, requires Blackwell GPU)
-    python quantize_wan_native.py --ckpt-dir /path/to/wan --format fp4 --calib-size 64 --quantized-ckpt-save-path ./quantized_fp4/
+    # NVFP4 weight-only (W4A-BF16)
+    python quantize_wan_native.py --ckpt-dir /path/to/wan --format fp4 --activation-enabled false --quantized-ckpt-save-path ./quantized/weight_only/
 
-    # NVFP4 with SVDQuant (better quality for FP4)
-    python quantize_wan_native.py --ckpt-dir /path/to/wan --format fp4 --quant-algo svdquant --lowrank 32 --quantized-ckpt-save-path ./quantized_fp4_svd/
+    # NVFP4 FFN-only
+    python quantize_wan_native.py --ckpt-dir /path/to/wan --format fp4 --quantize-attention false --quantized-ckpt-save-path ./quantized/ffn_only/
 
-    # INT8 quantization with SmoothQuant
-    python quantize_wan_native.py --ckpt-dir /path/to/wan --format int8 --quant-algo smoothquant --quantized-ckpt-save-path ./quantized_int8/
+    # NVFP4 layer range (blocks 0-10)
+    python quantize_wan_native.py --ckpt-dir /path/to/wan --format fp4 --layer-range 0-10 --quantized-ckpt-save-path ./quantized/layer_q1/
 
-    # Restore and generate with quantized models
-    python quantize_wan_native.py --ckpt-dir /path/to/wan --restore-from ./quantized/
+    # NVFP4 with SVDQuant algorithm
+    python quantize_wan_native.py --ckpt-dir /path/to/wan --format fp4 --quant-algo svdquant --quantized-ckpt-save-path ./quantized/svdquant/
+
+    # INT4 AWQ weight-only (for format comparison)
+    python quantize_wan_native.py --ckpt-dir /path/to/wan --format int4_awq --quantized-ckpt-save-path ./quantized/int4_awq/
+
+    # NVFP4 with sensitive layers in BF16
+    python quantize_wan_native.py --ckpt-dir /path/to/wan --format fp4 --sensitive-layers-file ./sensitive.txt --quantized-ckpt-save-path ./quantized/sensitive_bf16/
         """
     )
     
@@ -740,6 +793,13 @@ Examples:
         choices=["true", "false"],
         help="Whether to enable activation quantization"
     )
+    quant_group.add_argument(
+        "--sensitive-layers-file",
+        type=str,
+        default=None,
+        help="Path to file containing sensitive layer patterns (one per line). "
+             "Layers matching these patterns will be kept in BF16."
+    )
 
     calib_group = parser.add_argument_group("Calibration Configuration")
     calib_group.add_argument(
@@ -816,6 +876,25 @@ def parse_layer_range(layer_range_str: str | None) -> tuple[int, int] | None:
     return (int(parts[0]), int(parts[1]))
 
 
+def load_sensitive_layers(file_path: str | None) -> list[str] | None:
+    """Load sensitive layer patterns from file.
+
+    Args:
+        file_path: Path to file containing layer patterns, one per line.
+
+    Returns:
+        List of layer name patterns or None if no file specified.
+    """
+    if file_path is None:
+        return None
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Sensitive layers file not found: {file_path}")
+    with open(path) as f:
+        patterns = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    return patterns if patterns else None
+
+
 def main():
     parser = create_argument_parser()
     args = parser.parse_args()
@@ -829,6 +908,10 @@ def main():
         layer_range = parse_layer_range(args.layer_range)
         if layer_range:
             logger.info(f"Layer range: blocks {layer_range[0]} to {layer_range[1]-1}")
+
+        sensitive_layers = load_sensitive_layers(args.sensitive_layers_file)
+        if sensitive_layers:
+            logger.info(f"Loaded {len(sensitive_layers)} sensitive layer patterns")
 
         config = WanQuantConfig(
             ckpt_dir=args.ckpt_dir,
@@ -857,6 +940,7 @@ def main():
             quantize_ffn=args.quantize_ffn.lower() == "true",
             weight_enabled=args.weight_enabled.lower() == "true",
             activation_enabled=args.activation_enabled.lower() == "true",
+            sensitive_layers=sensitive_layers,
         )
         
         quantizer = WanNativeQuantizer(config, logger)

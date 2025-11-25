@@ -98,6 +98,20 @@ NVFP4_FP8_MHA_CONFIG = {
     "algorithm": {"method": "svdquant", "lowrank": 32},
 }
 
+INT4_AWQ_CONFIG = {
+    "quant_cfg": {
+        "*weight_quantizer": {
+            "num_bits": 4,
+            "block_sizes": {-1: 128, "type": "static"},
+            "enable": True,
+        },
+        "*input_quantizer": {"enable": False},
+        "*output_quantizer": {"enable": False},
+        "default": {"enable": False},
+    },
+    "algorithm": {"method": "awq_lite", "alpha_step": 0.1},
+}
+
 
 def set_quant_config_attr(quant_config, trt_high_precision_dtype, quant_algo, **kwargs):
     algo_cfg = {"method": quant_algo}
