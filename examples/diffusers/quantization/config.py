@@ -98,6 +98,28 @@ NVFP4_FP8_MHA_CONFIG = {
     "algorithm": {"method": "svdquant", "lowrank": 32},
 }
 
+NVFP4_STATIC_CONFIG = {
+    "quant_cfg": {
+        "*weight_quantizer": {
+            "num_bits": (2, 1),
+            "block_sizes": {-1: 16, "type": "static", "scale_bits": (4, 3)},
+            "axis": None,
+            "enable": True,
+        },
+        "*input_quantizer": {
+            "num_bits": (2, 1),
+            "block_sizes": {-1: 16, "type": "static", "scale_bits": (4, 3)},
+            "axis": None,
+            "enable": True,
+        },
+        "*output_quantizer": {"enable": False},
+        "*[qkv]_bmm_quantizer": {"num_bits": (4, 3), "axis": None},
+        "*softmax_quantizer": {"num_bits": (4, 3), "axis": None},
+        "default": {"enable": False},
+    },
+    "algorithm": "max",
+}
+
 INT4_AWQ_CONFIG = {
     "quant_cfg": {
         "*weight_quantizer": {

@@ -117,6 +117,7 @@ from config import (
     INT8_DEFAULT_CONFIG,
     NVFP4_DEFAULT_CONFIG,
     NVFP4_FP8_MHA_CONFIG,
+    NVFP4_STATIC_CONFIG,
     W4A8_AWQ_CONFIG,
     set_quant_config_attr,
 )
@@ -136,6 +137,13 @@ class QuantAlgo(str, Enum):
     MAX = "max"
     SMOOTHQUANT = "smoothquant"
     SVDQUANT = "svdquant"
+    AWQ_LITE = "awq_lite"
+
+
+class QuantBlockType(str, Enum):
+    """Block quantization type."""
+    DYNAMIC = "dynamic"
+    STATIC = "static"
 
 
 class DataType(str, Enum):
@@ -183,6 +191,8 @@ class WanQuantConfig:
     quantize_ffn: bool = True
     weight_enabled: bool = True
     activation_enabled: bool = True
+    block_type: QuantBlockType = QuantBlockType.DYNAMIC
+    block_size: int = 16
     sensitive_layers: list[str] | None = None
 
 
@@ -291,17 +301,21 @@ def get_quant_config(
     lowrank: int = 32,
     weight_enabled: bool = True,
     activation_enabled: bool = True,
+    block_type: QuantBlockType = QuantBlockType.DYNAMIC,
+    block_size: int = 16,
 ) -> dict:
     """Get quantization configuration based on format.
 
     Args:
         format: Quantization format (int8, fp8, fp4, int4_awq)
-        algo: Quantization algorithm (max, smoothquant, svdquant)
+        algo: Quantization algorithm (max, smoothquant, svdquant, awq_lite)
         trt_high_precision_dtype: TensorRT high precision dtype (Half, BFloat16, Float)
         alpha: SmoothQuant alpha parameter
         lowrank: SVDQuant lowrank parameter
         weight_enabled: Whether to enable weight quantization
         activation_enabled: Whether to enable activation quantization
+        block_type: Block quantization type (dynamic or static)
+        block_size: Block size for quantization (default: 16)
 
     Returns:
         Quantization configuration dictionary
@@ -318,6 +332,8 @@ def get_quant_config(
     elif format == QuantFormat.FP4:
         if algo == QuantAlgo.SVDQUANT:
             quant_config = copy.deepcopy(NVFP4_FP8_MHA_CONFIG)
+        elif block_type == QuantBlockType.STATIC:
+            quant_config = copy.deepcopy(NVFP4_STATIC_CONFIG)
         else:
             quant_config = copy.deepcopy(NVFP4_DEFAULT_CONFIG)
     elif format == QuantFormat.INT4_AWQ:
@@ -328,13 +344,17 @@ def get_quant_config(
     else:
         raise NotImplementedError(f"Unknown format {format}")
 
-    set_quant_config_attr(
-        quant_config,
-        trt_high_precision_dtype,
-        algo.value,
-        alpha=alpha,
-        lowrank=lowrank,
-    )
+    algo_value = algo.value
+    if algo == QuantAlgo.AWQ_LITE:
+        quant_config["algorithm"] = {"method": "awq_lite", "alpha_step": 0.1}
+    else:
+        set_quant_config_attr(
+            quant_config,
+            trt_high_precision_dtype,
+            algo_value,
+            alpha=alpha,
+            lowrank=lowrank,
+        )
 
     if not weight_enabled:
         for key in list(quant_config.get("quant_cfg", {}).keys()):
@@ -345,6 +365,11 @@ def get_quant_config(
         for key in list(quant_config.get("quant_cfg", {}).keys()):
             if "input_quantizer" in key:
                 quant_config["quant_cfg"][key] = {"enable": False}
+
+    if format == QuantFormat.FP4 and block_size != 16:
+        for key, value in quant_config.get("quant_cfg", {}).items():
+            if isinstance(value, dict) and "block_sizes" in value:
+                value["block_sizes"][-1] = block_size
 
     return quant_config
 
@@ -489,6 +514,8 @@ class WanNativeQuantizer:
             self.config.lowrank,
             self.config.weight_enabled,
             self.config.activation_enabled,
+            self.config.block_type,
+            self.config.block_size,
         )
         
         if self.config.restore_from:
@@ -799,6 +826,19 @@ Examples:
         help="Whether to enable activation quantization"
     )
     quant_group.add_argument(
+        "--block-type",
+        type=str,
+        default="dynamic",
+        choices=[t.value for t in QuantBlockType],
+        help="Block quantization type (dynamic or static)"
+    )
+    quant_group.add_argument(
+        "--block-size",
+        type=int,
+        default=16,
+        help="Block size for quantization (default: 16 for NVFP4 HW acceleration)"
+    )
+    quant_group.add_argument(
         "--sensitive-layers-file",
         type=str,
         default=None,
@@ -945,6 +985,8 @@ def main():
             quantize_ffn=args.quantize_ffn.lower() == "true",
             weight_enabled=args.weight_enabled.lower() == "true",
             activation_enabled=args.activation_enabled.lower() == "true",
+            block_type=QuantBlockType(args.block_type),
+            block_size=args.block_size,
             sensitive_layers=sensitive_layers,
         )
         
