@@ -24,6 +24,7 @@ Supported formats:
     - fp4: NVFP4 quantization (requires Blackwell GPUs, best compression)
     - int8: INT8 quantization
     - int4_awq: INT4 AWQ weight-only quantization
+    - w4a8: INT4 Weight + FP8 Activation (W4A8 AWQ)
 
 Usage:
     # NVFP4 full quantization (W4A4)
@@ -116,6 +117,7 @@ from config import (
     INT8_DEFAULT_CONFIG,
     NVFP4_DEFAULT_CONFIG,
     NVFP4_FP8_MHA_CONFIG,
+    W4A8_AWQ_CONFIG,
     set_quant_config_attr,
 )
 
@@ -126,6 +128,7 @@ class QuantFormat(str, Enum):
     FP8 = "fp8"
     FP4 = "fp4"
     INT4_AWQ = "int4_awq"
+    W4A8 = "w4a8"
 
 
 class QuantAlgo(str, Enum):
@@ -320,6 +323,8 @@ def get_quant_config(
     elif format == QuantFormat.INT4_AWQ:
         quant_config = copy.deepcopy(INT4_AWQ_CONFIG)
         return quant_config
+    elif format == QuantFormat.W4A8:
+        quant_config = copy.deepcopy(W4A8_AWQ_CONFIG)
     else:
         raise NotImplementedError(f"Unknown format {format}")
 
