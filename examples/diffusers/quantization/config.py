@@ -134,6 +134,20 @@ INT4_AWQ_CONFIG = {
     "algorithm": {"method": "awq_lite", "alpha_step": 0.1},
 }
 
+INT4_MAX_CONFIG = {
+    "quant_cfg": {
+        "*weight_quantizer": {
+            "num_bits": 4,
+            "block_sizes": {-1: 128},
+            "enable": True,
+        },
+        "*input_quantizer": {"enable": False},
+        "*output_quantizer": {"enable": False},
+        "default": {"enable": False},
+    },
+    "algorithm": "max",
+}
+
 W4A8_AWQ_CONFIG = {
     "quant_cfg": {
         "*weight_quantizer": [
