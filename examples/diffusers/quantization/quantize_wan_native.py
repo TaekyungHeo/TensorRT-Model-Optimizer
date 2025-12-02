@@ -123,6 +123,12 @@ from config import (
     set_quant_config_attr,
 )
 
+try:
+    from modelopt.torch.quantization.plugins import wan as wan_attention_quant
+    WAN_ATTENTION_QUANT_AVAILABLE = True
+except ImportError:
+    WAN_ATTENTION_QUANT_AVAILABLE = False
+
 
 class QuantFormat(str, Enum):
     """Supported quantization formats."""
@@ -196,6 +202,7 @@ class WanQuantConfig:
     block_type: QuantBlockType = QuantBlockType.DYNAMIC
     block_size: int = 16
     sensitive_layers: list[str] | None = None
+    quantize_sdpa: bool = True  # Enable SDPA (Q, K, V) quantization with FP8
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -431,15 +438,24 @@ class WanNativeQuantizer:
         self.logger.info(f"  - Quantize high_noise_model: {self.config.quantize_high_noise}")
         self.logger.info(f"  - Quantize attention: {self.config.quantize_attention}")
         self.logger.info(f"  - Quantize FFN: {self.config.quantize_ffn}")
+        self.logger.info(f"  - Quantize SDPA: {self.config.quantize_sdpa}")
         self.logger.info(f"  - Weight enabled: {self.config.weight_enabled}")
         self.logger.info(f"  - Activation enabled: {self.config.activation_enabled}")
+
+        if self.config.quantize_sdpa:
+            if WAN_ATTENTION_QUANT_AVAILABLE:
+                self.logger.info("  - SDPA quantization: ENABLED (FP8 Q, K, V)")
+            else:
+                self.logger.warning("  - SDPA quantization: REQUESTED but wan_attention_quant not available!")
+        else:
+            self.logger.info("  - SDPA quantization: DISABLED (Q, K, V will be BF16)")
         if self.config.sensitive_layers:
             self.logger.info(f"  - Sensitive layers (BF16): {len(self.config.sensitive_layers)} patterns")
             for pattern in self.config.sensitive_layers[:5]:
                 self.logger.info(f"      - {pattern}")
             if len(self.config.sensitive_layers) > 5:
                 self.logger.info(f"      - ... and {len(self.config.sensitive_layers) - 5} more")
-        
+
     def load_prompts(self) -> list[list[str]]:
         """Load calibration prompts."""
         if self.config.prompts_file:
@@ -496,16 +512,34 @@ class WanNativeQuantizer:
     def quantize_model(self, model: torch.nn.Module, model_name: str, quant_config: dict):
         """Quantize a single model."""
         self.logger.info(f"Quantizing {model_name}...")
-        
+
         model.to(self.device)
         model.eval()
-        
+
         mtq.quantize(model, quant_config, forward_loop=lambda m: None)
         mtq.disable_quantizer(model, self.filter_func)
         mtq.print_quant_summary(model)
-        
+
         self.logger.info(f"{model_name} quantization completed")
-        
+
+    def _disable_sdpa_quantizers(self, model: torch.nn.Module):
+        """Disable SDPA quantizers (q_bmm, k_bmm, v_bmm) for a model."""
+        if WAN_ATTENTION_QUANT_AVAILABLE:
+            wan_attention_quant.disable_wan_sdpa_quantization(model)
+        else:
+            def sdpa_filter_func(name: str) -> bool:
+                pattern = re.compile(
+                    r".*(q_bmm_quantizer|k_bmm_quantizer|v_bmm_quantizer|softmax_quantizer|bmm2_output_quantizer).*"
+                )
+                return pattern.match(name) is not None
+            mtq.disable_quantizer(model, sdpa_filter_func)
+
+    def _check_sdpa_quantization(self, model: torch.nn.Module) -> dict:
+        """Check SDPA quantization status for a model."""
+        if WAN_ATTENTION_QUANT_AVAILABLE:
+            return wan_attention_quant.check_wan_attention_quantization(model)
+        return {"error": "wan_attention_quant not available"}
+
     def quantize(self):
         """Main quantization method."""
         if self.wan_pipeline is None:
@@ -571,6 +605,10 @@ class WanNativeQuantizer:
                 )
                 mtq.disable_quantizer(self.wan_pipeline.low_noise_model, self.filter_func)
 
+                if not self.config.quantize_sdpa:
+                    self._disable_sdpa_quantizers(self.wan_pipeline.low_noise_model)
+                    self.logger.info("Disabled SDPA quantization for low_noise_model")
+
                 self.logger.info("low_noise_model quantization summary:")
                 mtq.print_quant_summary(self.wan_pipeline.low_noise_model)
 
@@ -617,11 +655,15 @@ class WanNativeQuantizer:
                 )
                 mtq.disable_quantizer(self.wan_pipeline.high_noise_model, self.filter_func)
 
+                if not self.config.quantize_sdpa:
+                    self._disable_sdpa_quantizers(self.wan_pipeline.high_noise_model)
+                    self.logger.info("Disabled SDPA quantization for high_noise_model")
+
                 self.logger.info("high_noise_model quantization summary:")
                 mtq.print_quant_summary(self.wan_pipeline.high_noise_model)
             else:
                 self.logger.info("⏭️  Skipping high_noise_model (disabled)")
-        
+
         if self.config.compress:
             self.logger.info("Compressing quantized models...")
             if self.config.quantize_low_noise:
@@ -850,6 +892,14 @@ Examples:
         help="Path to file containing sensitive layer patterns (one per line). "
              "Layers matching these patterns will be kept in BF16."
     )
+    quant_group.add_argument(
+        "--quantize-sdpa",
+        type=str,
+        default="true",
+        choices=["true", "false"],
+        help="Whether to quantize SDPA (Q, K, V in attention) with FP8. "
+             "If false, Q, K, V remain in BF16 which may improve quality at the cost of speed."
+    )
 
     calib_group = parser.add_argument_group("Calibration Configuration")
     calib_group.add_argument(
@@ -993,6 +1043,7 @@ def main():
             block_type=QuantBlockType(args.block_type),
             block_size=args.block_size,
             sensitive_layers=sensitive_layers,
+            quantize_sdpa=args.quantize_sdpa.lower() == "true",
         )
         
         quantizer = WanNativeQuantizer(config, logger)

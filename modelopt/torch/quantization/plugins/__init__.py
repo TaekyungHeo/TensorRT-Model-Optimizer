@@ -73,5 +73,8 @@ with import_plugin("transformers"):
 with import_plugin("vllm"):
     from .vllm import *
 
+with import_plugin("wan"):
+    from .wan import *
+
 with import_plugin("trl"):
     from .trl import *
