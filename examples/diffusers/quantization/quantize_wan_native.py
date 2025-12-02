@@ -202,7 +202,7 @@ class WanQuantConfig:
     block_type: QuantBlockType = QuantBlockType.DYNAMIC
     block_size: int = 16
     sensitive_layers: list[str] | None = None
-    quantize_sdpa: bool = True  # Enable SDPA (Q, K, V) quantization with FP8
+    quantize_sdpa: bool = True
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -444,7 +444,7 @@ class WanNativeQuantizer:
 
         if self.config.quantize_sdpa:
             if WAN_ATTENTION_QUANT_AVAILABLE:
-                self.logger.info("  - SDPA quantization: ENABLED (FP8 Q, K, V)")
+                self.logger.info(f"  - SDPA quantization: ENABLED ({self.config.format.value.upper()} Q, K, V)")
             else:
                 self.logger.warning("  - SDPA quantization: REQUESTED but wan_attention_quant not available!")
         else:
@@ -897,7 +897,7 @@ Examples:
         type=str,
         default="true",
         choices=["true", "false"],
-        help="Whether to quantize SDPA (Q, K, V in attention) with FP8. "
+        help="Whether to quantize SDPA (Q, K, V in attention) with the specified format. "
              "If false, Q, K, V remain in BF16 which may improve quality at the cost of speed."
     )
 
