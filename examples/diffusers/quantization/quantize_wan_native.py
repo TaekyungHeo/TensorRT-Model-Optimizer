@@ -21,6 +21,7 @@ instead of the diffusers pipeline, supporting both low_noise_model and high_nois
 
 Supported formats:
     - fp8: FP8 quantization (recommended for Ada/Hopper GPUs)
+    - mxfp8: MXFP8 quantization (MX format with E8M0 scales, block size 32)
     - fp4: NVFP4 quantization (requires Blackwell GPUs, best compression)
     - int8: INT8 quantization
     - int4_awq: INT4 AWQ weight-only quantization
@@ -116,6 +117,7 @@ from config import (
     INT4_AWQ_CONFIG,
     INT4_MAX_CONFIG,
     INT8_DEFAULT_CONFIG,
+    MXFP8_DEFAULT_CONFIG,
     NVFP4_DEFAULT_CONFIG,
     NVFP4_FP8_MHA_CONFIG,
     NVFP4_STATIC_CONFIG,
@@ -134,6 +136,7 @@ class QuantFormat(str, Enum):
     """Supported quantization formats."""
     INT8 = "int8"
     FP8 = "fp8"
+    MXFP8 = "mxfp8"
     FP4 = "fp4"
     INT4_AWQ = "int4_awq"
     INT4_MAX = "int4_max"
@@ -338,6 +341,8 @@ def get_quant_config(
             quant_config = copy.deepcopy(INT8_DEFAULT_CONFIG)
     elif format == QuantFormat.FP8:
         quant_config = copy.deepcopy(FP8_DEFAULT_CONFIG)
+    elif format == QuantFormat.MXFP8:
+        quant_config = copy.deepcopy(MXFP8_DEFAULT_CONFIG)
     elif format == QuantFormat.FP4:
         if algo == QuantAlgo.SVDQUANT:
             quant_config = copy.deepcopy(NVFP4_FP8_MHA_CONFIG)
