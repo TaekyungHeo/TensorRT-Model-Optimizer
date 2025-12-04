@@ -156,6 +156,8 @@ class WanQuantConfig:
     quantize_high_noise: bool = True
     quantize_sdpa: bool = True
     layer_range: tuple[int, int] | None = None
+    quantize_attention: bool = True
+    quantize_ffn: bool = True
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -186,12 +188,16 @@ def filter_func_wan_native(name: str) -> bool:
 
 def create_quantization_filter(
     layer_range: tuple[int, int] | None = None,
+    quantize_attention: bool = True,
+    quantize_ffn: bool = True,
 ):
-    """Create a filter function that disables quantization based on layer range.
+    """Create a filter function that disables quantization based on layer range and component.
 
     Args:
         layer_range: Tuple of (start, end) layer indices. Layers in [start, end) are quantized.
                     If None, all layers are quantized.
+        quantize_attention: Whether to quantize attention modules (self_attn, cross_attn).
+        quantize_ffn: Whether to quantize FFN modules.
 
     Returns:
         Filter function that returns True for layers to DISABLE quantization.
@@ -200,9 +206,17 @@ def create_quantization_filter(
         r".*(patch_embedding|text_embedding|time_embedding|time_projection).*"
     )
     block_pattern = re.compile(r".*blocks\.(\d+)\..*")
+    attention_pattern = re.compile(r".*(self_attn|cross_attn).*")
+    ffn_pattern = re.compile(r".*\.ffn\..*")
 
     def filter_func(name: str) -> bool:
         if embedding_pattern.match(name) is not None:
+            return True
+
+        if not quantize_attention and attention_pattern.match(name) is not None:
+            return True
+
+        if not quantize_ffn and ffn_pattern.match(name) is not None:
             return True
 
         if layer_range is not None:
@@ -292,6 +306,8 @@ class WanNativeQuantizer:
         self.wan_pipeline = None
         self.filter_func = create_quantization_filter(
             layer_range=config.layer_range,
+            quantize_attention=config.quantize_attention,
+            quantize_ffn=config.quantize_ffn,
         )
 
     def load_pipeline(self):
@@ -329,6 +345,8 @@ class WanNativeQuantizer:
             self.logger.info("  - Layer range: all layers")
         self.logger.info(f"  - Quantize low_noise_model: {self.config.quantize_low_noise}")
         self.logger.info(f"  - Quantize high_noise_model: {self.config.quantize_high_noise}")
+        self.logger.info(f"  - Quantize attention: {self.config.quantize_attention}")
+        self.logger.info(f"  - Quantize FFN: {self.config.quantize_ffn}")
         self.logger.info(f"  - Quantize SDPA: {self.config.quantize_sdpa}")
         if self.config.quantize_sdpa:
             if WAN_ATTENTION_QUANT_AVAILABLE:
@@ -718,6 +736,20 @@ Examples:
         default=None,
         help="Layer range to quantize (e.g., '0-20' for blocks 0-19). Wan A14B has 40 blocks (0-39)."
     )
+    quant_group.add_argument(
+        "--quantize-attention",
+        type=str,
+        default="true",
+        choices=["true", "false"],
+        help="Whether to quantize attention modules (self_attn, cross_attn)"
+    )
+    quant_group.add_argument(
+        "--quantize-ffn",
+        type=str,
+        default="true",
+        choices=["true", "false"],
+        help="Whether to quantize FFN modules"
+    )
 
     calib_group = parser.add_argument_group("Calibration Configuration")
     calib_group.add_argument(
@@ -832,6 +864,8 @@ def main():
             quantize_high_noise=args.quantize_high_noise.lower() == "true",
             quantize_sdpa=args.quantize_sdpa.lower() == "true",
             layer_range=layer_range,
+            quantize_attention=args.quantize_attention.lower() == "true",
+            quantize_ffn=args.quantize_ffn.lower() == "true",
         )
 
         quantizer = WanNativeQuantizer(config, logger)
