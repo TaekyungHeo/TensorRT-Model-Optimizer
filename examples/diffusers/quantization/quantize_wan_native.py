@@ -93,6 +93,7 @@ except ImportError:
 
 from config import (
     FP8_DEFAULT_CONFIG,
+    INT4_AWQ_CONFIG,
     INT8_DEFAULT_CONFIG,
     NVFP4_DEFAULT_CONFIG,
     NVFP4_FP8_MHA_CONFIG,
@@ -105,6 +106,7 @@ class QuantFormat(str, Enum):
     INT8 = "int8"
     FP8 = "fp8"
     FP4 = "fp4"
+    INT4_AWQ = "int4_awq"
 
 
 class QuantAlgo(str, Enum):
@@ -291,6 +293,8 @@ def get_quant_config(
             quant_config = copy.deepcopy(NVFP4_FP8_MHA_CONFIG)
         else:
             quant_config = copy.deepcopy(NVFP4_DEFAULT_CONFIG)
+    elif format == QuantFormat.INT4_AWQ:
+        quant_config = copy.deepcopy(INT4_AWQ_CONFIG)
     else:
         raise NotImplementedError(f"Unknown format {format}")
 
