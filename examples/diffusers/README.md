@@ -21,6 +21,7 @@ Cache Diffusion is a technique that reuses cached outputs from previous diffusio
 | LoRA | Fuse your LoRA weights prior to quantization | \[[Link](#lora)\] | |
 | Evaluate Accuracy | Evaluate your model's accuracy! | \[[Link](#evaluate-accuracy)\] | |
 | Pre-Quantized Checkpoints | Ready to deploy Hugging Face pre-quantized checkpoints | \[[Link](#pre-quantized-checkpoints)\] | |
+| Wan Native Pipeline | Quantize Wan2.2 using native pipeline instead of diffusers | \[[Link](#wan-native-pipeline-quantization)\] | |
 | Resources | Extra links to relevant resources | \[[Link](#resources)\] | |
 
 </div>
@@ -74,12 +75,16 @@ mtq.quantize(model=transformer, config=quant_config, forward_func=forward_pass)
 | [Stable Diffusion XL](https://huggingface.co/papers/2307.01952) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | [SDXL-Turbo](https://huggingface.co/stabilityai/sdxl-turbo) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - |
 | [Stable Diffusion 2.1](https://huggingface.co/stabilityai/stable-diffusion-2-1) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - |
+| [Wan2.2-T2V](https://github.com/Wan-AI/Wan2.2) (diffusers) | ✅ | ✅ | - | - | ✅ | - | - |
+| [Wan2.2-T2V](https://github.com/Wan-AI/Wan2.2) (native)<sup>4</sup> | ✅ | ✅ | - | - | ✅ | - | - |
 
 > *<sup>1.</sup>The w4a8_awq is an experimental quantization scheme that may result in a higher accuracy penalty.*
 
 > *<sup>2.</sup>A selective set of the popular models are internally tested. The actual model support list may be longer. NVFP4 inference requires Blackwell GPUs and TensorRT-LLM v0.17 or later*
 
 > *<sup>3.</sup>The SVDQuant Perf in TRT might not good as the [Nunchaku: MIT-Nvidia](https://github.com/nunchaku-tech/nunchaku) at this moment.*
+
+> *<sup>4.</sup>Wan2.2 native pipeline support allows quantization using the original Wan codebase instead of diffusers. See [Wan Native Pipeline Quantization](#wan-native-pipeline-quantization) for details.*
 
 ## Post Training Quantization (PTQ)
 
@@ -534,6 +539,75 @@ Example metrics obtained with 30 sampling steps on a set of 1K prompts (values w
 | FLUX 1 Dev | BF16 | 1.118 | 0.927 | 30.15 |
 | | FP4 PTQ | 1.096 | 0.923 | 29.86 |
 | | FP4 QAT | 1.119 | 0.928 | 29.919 |
+
+## Wan Native Pipeline Quantization
+
+The standard quantization script uses the diffusers `WanPipeline` for Wan2.2 models. However, if you want to use **Wan's native pipeline** (`WanT2V`) instead of the diffusers pipeline, we provide a dedicated quantization script that supports this use case.
+
+### Why Use Native Pipeline?
+
+- **Full Control**: Use Wan's native features and optimizations
+- **Dual Model Support**: Wan2.2 T2V uses two separate models (`low_noise_model` and `high_noise_model`) that switch based on timestep boundary
+- **Custom Workflows**: Integrate with existing Wan-based codebases without diffusers dependency
+
+### Quantize Wan with Native Pipeline
+
+First, clone the Wan2.2 repository and place it in the project:
+
+```bash
+git clone https://github.com/Wan-AI/Wan2.2.git
+cd Wan2.2
+pip install -r requirements.txt
+```
+
+Then run the quantization script:
+
+```bash
+# FP8 Quantization
+python quantize_wan_native.py \
+    --ckpt-dir /path/to/wan/checkpoint \
+    --format fp8 \
+    --calib-size 32 \
+    --batch-size 1 \
+    --quantized-ckpt-save-path ./quantized_wan/
+
+# INT8 Quantization with SmoothQuant
+python quantize_wan_native.py \
+    --ckpt-dir /path/to/wan/checkpoint \
+    --format int8 \
+    --quant-algo smoothquant \
+    --quantized-ckpt-save-path ./quantized_wan/
+```
+
+### Generate Videos with Quantized Models
+
+After quantization, use the inference script to generate videos:
+
+```bash
+python generate_wan_native.py \
+    --ckpt-dir /path/to/wan/checkpoint \
+    --quantized-ckpt ./quantized_wan/ \
+    --prompt "A cat playing with a ball in a garden" \
+    --size 1280*720 \
+    --frame-num 81 \
+    --output output.mp4
+```
+
+### Key Differences from Diffusers Pipeline
+
+| Feature | Diffusers Pipeline | Native Pipeline |
+|:-------:|:------------------:|:---------------:|
+| Model Structure | Single `transformer` | `low_noise_model` + `high_noise_model` |
+| Quantization | Single model | Both models quantized separately |
+| Checkpoint Format | Single `.pt` file | Two `.pt` files (one per model) |
+| Timestep Handling | Internal | Explicit boundary-based switching |
+
+### Script Reference
+
+| Script | Description |
+|:------:|:-----------:|
+| [quantize_wan_native.py](./quantization/quantize_wan_native.py) | Quantize Wan models using native pipeline |
+| [generate_wan_native.py](./quantization/generate_wan_native.py) | Generate videos with quantized Wan models |
 
 ## Pre-Quantized Checkpoints
 
