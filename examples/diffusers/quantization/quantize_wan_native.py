@@ -66,7 +66,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 from datasets import load_dataset
@@ -155,6 +155,7 @@ class WanQuantConfig:
     quantize_low_noise: bool = True
     quantize_high_noise: bool = True
     quantize_sdpa: bool = True
+    layer_range: tuple[int, int] | None = None
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -181,6 +182,40 @@ def filter_func_wan_native(name: str) -> bool:
     """
     pattern = re.compile(r".*(patch_embedding|text_embedding|time_embedding|time_projection).*")
     return pattern.match(name) is not None
+
+
+def create_quantization_filter(
+    layer_range: tuple[int, int] | None = None,
+):
+    """Create a filter function that disables quantization based on layer range.
+
+    Args:
+        layer_range: Tuple of (start, end) layer indices. Layers in [start, end) are quantized.
+                    If None, all layers are quantized.
+
+    Returns:
+        Filter function that returns True for layers to DISABLE quantization.
+    """
+    embedding_pattern = re.compile(
+        r".*(patch_embedding|text_embedding|time_embedding|time_projection).*"
+    )
+    block_pattern = re.compile(r".*blocks\.(\d+)\..*")
+
+    def filter_func(name: str) -> bool:
+        if embedding_pattern.match(name) is not None:
+            return True
+
+        if layer_range is not None:
+            start, end = layer_range
+            match = block_pattern.match(name)
+            if match:
+                block_idx = int(match.group(1))
+                if block_idx < start or block_idx >= end:
+                    return True
+
+        return False
+
+    return filter_func
 
 
 def load_calib_prompts(
@@ -255,6 +290,9 @@ class WanNativeQuantizer:
         self.logger = logger
         self.device = torch.device(f"cuda:{config.device_id}")
         self.wan_pipeline = None
+        self.filter_func = create_quantization_filter(
+            layer_range=config.layer_range,
+        )
 
     def load_pipeline(self):
         """Load Wan native pipeline."""
@@ -284,6 +322,11 @@ class WanNativeQuantizer:
         self.logger.info("Wan pipeline loaded successfully")
         self.logger.info(f"  - low_noise_model parameters: {sum(p.numel() for p in self.wan_pipeline.low_noise_model.parameters()):,}")
         self.logger.info(f"  - high_noise_model parameters: {sum(p.numel() for p in self.wan_pipeline.high_noise_model.parameters()):,}")
+        if self.config.layer_range:
+            start, end = self.config.layer_range
+            self.logger.info(f"  - Layer range: blocks {start} to {end-1} (inclusive)")
+        else:
+            self.logger.info("  - Layer range: all layers")
         self.logger.info(f"  - Quantize low_noise_model: {self.config.quantize_low_noise}")
         self.logger.info(f"  - Quantize high_noise_model: {self.config.quantize_high_noise}")
         self.logger.info(f"  - Quantize SDPA: {self.config.quantize_sdpa}")
@@ -368,7 +411,7 @@ class WanNativeQuantizer:
         model.eval()
 
         mtq.quantize(model, quant_config, forward_loop=lambda m: None)
-        mtq.disable_quantizer(model, filter_func_wan_native)
+        mtq.disable_quantizer(model, self.filter_func)
         mtq.print_quant_summary(model)
 
         self.logger.info(f"{model_name} quantization completed")
@@ -432,7 +475,7 @@ class WanNativeQuantizer:
                     quant_config.copy(),
                     forward_loop=low_noise_forward_loop
                 )
-                mtq.disable_quantizer(self.wan_pipeline.low_noise_model, filter_func_wan_native)
+                mtq.disable_quantizer(self.wan_pipeline.low_noise_model, self.filter_func)
 
                 if not self.config.quantize_sdpa:
                     self._disable_sdpa_quantizers(self.wan_pipeline.low_noise_model)
@@ -482,7 +525,7 @@ class WanNativeQuantizer:
                     quant_config.copy(),
                     forward_loop=high_noise_forward_loop
                 )
-                mtq.disable_quantizer(self.wan_pipeline.high_noise_model, filter_func_wan_native)
+                mtq.disable_quantizer(self.wan_pipeline.high_noise_model, self.filter_func)
 
                 if not self.config.quantize_sdpa:
                     self._disable_sdpa_quantizers(self.wan_pipeline.high_noise_model)
@@ -669,6 +712,12 @@ Examples:
         help="Whether to quantize SDPA (Q, K, V in attention) with the specified format. "
              "If false, Q, K, V remain in BF16 (default: true)"
     )
+    quant_group.add_argument(
+        "--layer-range",
+        type=str,
+        default=None,
+        help="Layer range to quantize (e.g., '0-20' for blocks 0-19). Wan A14B has 40 blocks (0-39)."
+    )
 
     calib_group = parser.add_argument_group("Calibration Configuration")
     calib_group.add_argument(
@@ -735,6 +784,16 @@ Examples:
     return parser
 
 
+def parse_layer_range(layer_range_str: str | None) -> tuple[int, int] | None:
+    """Parse layer range string (e.g., '0-20') into tuple."""
+    if layer_range_str is None:
+        return None
+    parts = layer_range_str.split("-")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid layer range format: {layer_range_str}. Expected 'start-end'.")
+    return (int(parts[0]), int(parts[1]))
+
+
 def main():
     parser = create_argument_parser()
     args = parser.parse_args()
@@ -745,6 +804,10 @@ def main():
     start_time = time.time()
 
     try:
+        layer_range = parse_layer_range(args.layer_range)
+        if layer_range:
+            logger.info(f"Layer range: blocks {layer_range[0]} to {layer_range[1]-1}")
+
         config = WanQuantConfig(
             ckpt_dir=args.ckpt_dir,
             task=args.task,
@@ -768,6 +831,7 @@ def main():
             quantize_low_noise=args.quantize_low_noise.lower() == "true",
             quantize_high_noise=args.quantize_high_noise.lower() == "true",
             quantize_sdpa=args.quantize_sdpa.lower() == "true",
+            layer_range=layer_range,
         )
 
         quantizer = WanNativeQuantizer(config, logger)
