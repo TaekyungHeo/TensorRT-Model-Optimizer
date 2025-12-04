@@ -18,14 +18,14 @@ from calib.plugin_calib import PercentileCalibrator
 
 FP8_DEFAULT_CONFIG = {
     "quant_cfg": {
-        "*weight_quantizer": {"num_bits": (4, 3), "axis": None},
-        "*input_quantizer": {"num_bits": (4, 3), "axis": None},
+        "*weight_quantizer": {"num_bits": (4, 3), "axis": None, "enable": True},
+        "*input_quantizer": {"num_bits": (4, 3), "axis": None, "enable": True},
         "*output_quantizer": {"enable": False},
-        "*[qkv]_bmm_quantizer": {"num_bits": (4, 3), "axis": None},
-        "*softmax_quantizer": {
-            "num_bits": (4, 3),
-            "axis": None,
-        },
+        "*q_bmm_quantizer": {"num_bits": (4, 3), "axis": None, "enable": True},
+        "*k_bmm_quantizer": {"num_bits": (4, 3), "axis": None, "enable": True},
+        "*v_bmm_quantizer": {"num_bits": (4, 3), "axis": None, "enable": True},
+        "*bmm2_output_quantizer": {"num_bits": (4, 3), "axis": None, "enable": True},
+        "*softmax_quantizer": {"enable": False},
         "default": {"enable": False},
     },
     "algorithm": "max",
