@@ -160,6 +160,7 @@ class WanQuantConfig:
     quantize_ffn: bool = True
     weight_enabled: bool = True
     activation_enabled: bool = True
+    block_size: int = 16
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -259,6 +260,7 @@ def get_quant_config(
     lowrank: int = 32,
     weight_enabled: bool = True,
     activation_enabled: bool = True,
+    block_size: int = 16,
 ) -> dict:
     """Get quantization configuration based on format.
 
@@ -270,6 +272,7 @@ def get_quant_config(
         lowrank: SVDQuant lowrank parameter
         weight_enabled: Whether to enable weight quantization
         activation_enabled: Whether to enable activation quantization
+        block_size: Block size for NVFP4 quantization (default: 16)
 
     Returns:
         Quantization configuration dictionary
@@ -308,6 +311,11 @@ def get_quant_config(
         for key in list(quant_config.get("quant_cfg", {}).keys()):
             if "input_quantizer" in key:
                 quant_config["quant_cfg"][key] = {"enable": False}
+
+    if format == QuantFormat.FP4 and block_size != 16:
+        for key, value in quant_config.get("quant_cfg", {}).items():
+            if isinstance(value, dict) and "block_sizes" in value:
+                value["block_sizes"][-1] = block_size
 
     return quant_config
 
@@ -365,6 +373,8 @@ class WanNativeQuantizer:
         self.logger.info(f"  - Quantize FFN: {self.config.quantize_ffn}")
         self.logger.info(f"  - Weight enabled: {self.config.weight_enabled}")
         self.logger.info(f"  - Activation enabled: {self.config.activation_enabled}")
+        if self.config.format == QuantFormat.FP4:
+            self.logger.info(f"  - Block size: {self.config.block_size}")
         self.logger.info(f"  - Quantize SDPA: {self.config.quantize_sdpa}")
         if self.config.quantize_sdpa:
             if WAN_ATTENTION_QUANT_AVAILABLE:
@@ -465,6 +475,7 @@ class WanNativeQuantizer:
             self.config.lowrank,
             self.config.weight_enabled,
             self.config.activation_enabled,
+            self.config.block_size,
         )
 
         if self.config.restore_from:
@@ -784,6 +795,12 @@ Examples:
         choices=["true", "false"],
         help="Whether to enable activation quantization (set to false for weight-only)"
     )
+    quant_group.add_argument(
+        "--block-size",
+        type=int,
+        default=16,
+        help="Block size for NVFP4 quantization (default: 16). Useful for experimenting with different block sizes."
+    )
 
     calib_group = parser.add_argument_group("Calibration Configuration")
     calib_group.add_argument(
@@ -902,6 +919,7 @@ def main():
             quantize_ffn=args.quantize_ffn.lower() == "true",
             weight_enabled=args.weight_enabled.lower() == "true",
             activation_enabled=args.activation_enabled.lower() == "true",
+            block_size=args.block_size,
         )
 
         quantizer = WanNativeQuantizer(config, logger)
