@@ -31,6 +31,45 @@ FP8_DEFAULT_CONFIG = {
     "algorithm": "max",
 }
 
+MXFP8_DEFAULT_CONFIG = {
+    "quant_cfg": {
+        "*weight_quantizer": {
+            "num_bits": (4, 3),
+            "block_sizes": {-1: 32, "type": "dynamic", "scale_bits": (8, 0)},
+            "enable": True,
+        },
+        "*input_quantizer": {
+            "num_bits": (4, 3),
+            "block_sizes": {-1: 32, "type": "dynamic", "scale_bits": (8, 0)},
+            "enable": True,
+        },
+        "*output_quantizer": {"enable": False},
+        "*q_bmm_quantizer": {
+            "num_bits": (4, 3),
+            "block_sizes": {-1: 32, "type": "dynamic", "scale_bits": (8, 0)},
+            "enable": True,
+        },
+        "*k_bmm_quantizer": {
+            "num_bits": (4, 3),
+            "block_sizes": {-1: 32, "type": "dynamic", "scale_bits": (8, 0)},
+            "enable": True,
+        },
+        "*v_bmm_quantizer": {
+            "num_bits": (4, 3),
+            "block_sizes": {-1: 32, "type": "dynamic", "scale_bits": (8, 0)},
+            "enable": True,
+        },
+        "*bmm2_output_quantizer": {
+            "num_bits": (4, 3),
+            "block_sizes": {-1: 32, "type": "dynamic", "scale_bits": (8, 0)},
+            "enable": True,
+        },
+        "*softmax_quantizer": {"enable": False},
+        "default": {"enable": False},
+    },
+    "algorithm": "max",
+}
+
 INT8_DEFAULT_CONFIG = {
     "quant_cfg": {
         "*weight_quantizer": {"num_bits": 8, "axis": 0},

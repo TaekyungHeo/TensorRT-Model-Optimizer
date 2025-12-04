@@ -96,6 +96,7 @@ from config import (
     INT4_AWQ_CONFIG,
     INT4_MAX_CONFIG,
     INT8_DEFAULT_CONFIG,
+    MXFP8_DEFAULT_CONFIG,
     NVFP4_DEFAULT_CONFIG,
     NVFP4_FP8_MHA_CONFIG,
     set_quant_config_attr,
@@ -106,6 +107,7 @@ class QuantFormat(str, Enum):
     """Supported quantization formats."""
     INT8 = "int8"
     FP8 = "fp8"
+    MXFP8 = "mxfp8"
     FP4 = "fp4"
     INT4_AWQ = "int4_awq"
     INT4_MAX = "int4_max"
@@ -290,6 +292,8 @@ def get_quant_config(
             quant_config = copy.deepcopy(INT8_DEFAULT_CONFIG)
     elif format == QuantFormat.FP8:
         quant_config = copy.deepcopy(FP8_DEFAULT_CONFIG)
+    elif format == QuantFormat.MXFP8:
+        quant_config = copy.deepcopy(MXFP8_DEFAULT_CONFIG)
     elif format == QuantFormat.FP4:
         if algo == QuantAlgo.SVDQUANT:
             quant_config = copy.deepcopy(NVFP4_FP8_MHA_CONFIG)
