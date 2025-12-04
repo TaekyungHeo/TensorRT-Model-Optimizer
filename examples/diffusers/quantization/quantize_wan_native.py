@@ -158,6 +158,8 @@ class WanQuantConfig:
     layer_range: tuple[int, int] | None = None
     quantize_attention: bool = True
     quantize_ffn: bool = True
+    weight_enabled: bool = True
+    activation_enabled: bool = True
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -255,6 +257,8 @@ def get_quant_config(
     trt_high_precision_dtype: str = "BFloat16",
     alpha: float = 1.0,
     lowrank: int = 32,
+    weight_enabled: bool = True,
+    activation_enabled: bool = True,
 ) -> dict:
     """Get quantization configuration based on format.
 
@@ -264,6 +268,8 @@ def get_quant_config(
         trt_high_precision_dtype: TensorRT high precision dtype (Half, BFloat16, Float)
         alpha: SmoothQuant alpha parameter
         lowrank: SVDQuant lowrank parameter
+        weight_enabled: Whether to enable weight quantization
+        activation_enabled: Whether to enable activation quantization
 
     Returns:
         Quantization configuration dictionary
@@ -292,6 +298,16 @@ def get_quant_config(
         alpha=alpha,
         lowrank=lowrank,
     )
+
+    if not weight_enabled:
+        for key in list(quant_config.get("quant_cfg", {}).keys()):
+            if "weight_quantizer" in key:
+                quant_config["quant_cfg"][key] = {"enable": False}
+
+    if not activation_enabled:
+        for key in list(quant_config.get("quant_cfg", {}).keys()):
+            if "input_quantizer" in key:
+                quant_config["quant_cfg"][key] = {"enable": False}
 
     return quant_config
 
@@ -347,6 +363,8 @@ class WanNativeQuantizer:
         self.logger.info(f"  - Quantize high_noise_model: {self.config.quantize_high_noise}")
         self.logger.info(f"  - Quantize attention: {self.config.quantize_attention}")
         self.logger.info(f"  - Quantize FFN: {self.config.quantize_ffn}")
+        self.logger.info(f"  - Weight enabled: {self.config.weight_enabled}")
+        self.logger.info(f"  - Activation enabled: {self.config.activation_enabled}")
         self.logger.info(f"  - Quantize SDPA: {self.config.quantize_sdpa}")
         if self.config.quantize_sdpa:
             if WAN_ATTENTION_QUANT_AVAILABLE:
@@ -445,6 +463,8 @@ class WanNativeQuantizer:
             self.config.trt_high_precision_dtype.value,
             self.config.alpha,
             self.config.lowrank,
+            self.config.weight_enabled,
+            self.config.activation_enabled,
         )
 
         if self.config.restore_from:
@@ -750,6 +770,20 @@ Examples:
         choices=["true", "false"],
         help="Whether to quantize FFN modules"
     )
+    quant_group.add_argument(
+        "--weight-enabled",
+        type=str,
+        default="true",
+        choices=["true", "false"],
+        help="Whether to enable weight quantization"
+    )
+    quant_group.add_argument(
+        "--activation-enabled",
+        type=str,
+        default="true",
+        choices=["true", "false"],
+        help="Whether to enable activation quantization (set to false for weight-only)"
+    )
 
     calib_group = parser.add_argument_group("Calibration Configuration")
     calib_group.add_argument(
@@ -866,6 +900,8 @@ def main():
             layer_range=layer_range,
             quantize_attention=args.quantize_attention.lower() == "true",
             quantize_ffn=args.quantize_ffn.lower() == "true",
+            weight_enabled=args.weight_enabled.lower() == "true",
+            activation_enabled=args.activation_enabled.lower() == "true",
         )
 
         quantizer = WanNativeQuantizer(config, logger)
